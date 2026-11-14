@@ -14741,6 +14741,14 @@ pub mod processor {
             return Err(PercolatorError::InvalidInstruction.into());
         }
         let profile = read_oracle_profile_from_view(group, cfg, asset_index)?;
+        // Asset Recovery settles already-committed K/F/B at its frozen price. Its
+        // oracle profile cannot receive a new Live observation after shutdown, so
+        // requiring a current-slot report would strand otherwise-bounded progress.
+        // Five is the pinned engine account encoding for Recovery; all other
+        // lifecycles retain the existing health-observation checks below.
+        if group.markets[asset_index].engine.asset.lifecycle == 5 {
+            return Ok(());
+        }
         // A stale-account refresh cannot consume this slot's accrual interval from a prior-slot
         // Hybrid observation. In normal external mode every active health leg must have advanced
         // from an authenticated report in this slot. Once the configured after-hours threshold

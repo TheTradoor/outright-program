@@ -183,6 +183,68 @@ fn submit_with_cu_limit(
     cu
 }
 
+// The receipt matrices below need authenticated-origin liquidation. A fresh
+// report alone cannot erase a stale trade's provenance while effective price
+// still lags. Corroborate the already accepted current price through the public
+// crank before testing later authenticated-price receipt lifecycle behavior.
+fn corroborate_current_price(
+    env: &mut V16CuEnv,
+    asset: u16,
+    feed: &[u8; 32],
+    portfolio: Pubkey,
+    signer: &Keypair,
+    portfolios: [Pubkey; 5],
+    tracked: &mut Vec<Pubkey>,
+) -> (Pubkey, u64) {
+    let clock = env.svm.get_sysvar::<Clock>();
+    let before = env.market_state().1;
+    let before_values = values(env, portfolios);
+    let custody = [env.mint, env.vault].map(|key| env.svm.get_account(&key));
+    let prior = state::read_asset_oracle_profile(
+        &env.svm.get_account(&env.market).unwrap().data,
+        asset as usize,
+    ).unwrap();
+    assert_eq!(prior.effective_price_provenance,
+        percolator_prog::constants::EFFECTIVE_PRICE_PROVENANCE_TRADE_DRIVEN);
+    let price = before.assets[asset as usize].effective_price;
+    let report = env.set_pyth_price_with_conf(feed, price as i64, -6, 0, clock.unix_timestamp);
+    tracked.push(report);
+    let ix = Instruction {
+        program_id: env.program_id,
+        accounts: vec![
+            AccountMeta::new(signer.pubkey(), true),
+            AccountMeta::new(env.market, false),
+            AccountMeta::new(portfolio, false),
+            AccountMeta::new_readonly(report, false),
+        ],
+        data: ProgInstruction::PermissionlessCrank {
+            now_slot: u64::MAX,
+            observations: crank_observations_with_accounts(asset, 1),
+        }.encode(),
+    };
+    let cu = submit_with_cu_limit(env, signer, &[ix], tracked, None, 500_000);
+    let after = env.market_state().1;
+    let profile = state::read_asset_oracle_profile(
+        &env.svm.get_account(&env.market).unwrap().data,
+        asset as usize,
+    ).unwrap();
+    assert_eq!(after.assets[asset as usize].effective_price, price);
+    assert_eq!(after.assets[asset as usize].raw_oracle_target_price, price);
+    assert_eq!(profile.effective_price_provenance,
+        percolator_prog::constants::EFFECTIVE_PRICE_PROVENANCE_AUTHENTICATED);
+    assert_eq!(profile.last_good_oracle_slot, clock.slot);
+    assert_eq!(profile.oracle_target_publish_time, clock.unix_timestamp);
+    assert_eq!(values(env, portfolios), before_values,
+        "corroboration itself cannot pay a reward or alter owner value");
+    assert_eq!(after.insurance, before.insurance);
+    assert_eq!(after.insurance_domain_budget, before.insurance_domain_budget);
+    assert_eq!(after.insurance_domain_budget_remaining_total,
+        before.insurance_domain_budget_remaining_total);
+    assert_eq!([env.mint, env.vault].map(|key| env.svm.get_account(&key)), custody);
+    census(env, portfolios);
+    (report, cu)
+}
+
 fn run_authenticated_handoff(
     max_funding: u64,
     fresh_prices: &[u64],

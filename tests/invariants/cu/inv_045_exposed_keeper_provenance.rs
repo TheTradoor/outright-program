@@ -14,6 +14,9 @@
 //! CPI, underwater/shared-owner recipients, more providers, nonzero funding or
 //! maintenance, arbitrary histories and terminal redemption remain unproven.
 //! Row 422 stays OPEN; this is a finite conformance family, not a generic oracle.
+//! Receipt histories first publicly corroborate the current effective price.
+//! Their later lag is authenticated-origin; a merely fresh report during
+//! trade-origin lag remains non-rewardable and is covered by the handoff controls.
 
 use super::*;
 
@@ -176,6 +179,11 @@ fn v16_program_exposed_auth_keeper_reward_commutes_with_settlement_through_hybri
             assert_eq!(staged.insurance, discovery);
             assert_eq!(staged.insurance_domain_budget_remaining_total, 0);
             assert_eq!(env.portfolio_state(keeper).legs, keeper_legs);
+
+            let (_, corroboration_cu) = corroborate_current_price(
+                &mut env, 0, &feed, trader_a, &owners[4], portfolios, &mut tracked,
+            );
+            peak_crank = peak_crank.max(corroboration_cu);
 
             let mut total_fee = 0;
             let mut total_reward = 0;

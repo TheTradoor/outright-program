@@ -2,6 +2,9 @@
 //! recipient's own maintenance. Asset-0 maintenance budgets and asset-1
 //! liquidation budgets must remain distinct across fee collection order.
 //! Public construction and instructions only; finite conformance, row stays OPEN.
+//! Receipt histories first publicly corroborate the current effective price.
+//! Their later lag is authenticated-origin; a merely fresh report during
+//! trade-origin lag remains non-rewardable and is covered by the handoff controls.
 
 use super::*;
 
@@ -190,6 +193,11 @@ fn v16_program_keeper_maintenance_preserves_distinct_reward_budgets_until_catchu
         assert_eq!(env.market_state().1.assets[1].raw_oracle_target_price, MARK);
         assert_eq!(env.portfolio_state(keeper).last_fee_slot.get(), 1);
         treasury(&env, portfolios, discovery, 0, 0, [0; 2]);
+        let (_, corroboration_cu) = corroborate_current_price(
+            &mut env, 1, &feed, trader_a, &owners[4], portfolios, &mut tracked,
+        );
+        peak = peak.max(corroboration_cu);
+
         let mut fees = 0;
         let mut rewards = 0;
         let mut budgets = [0; 2];

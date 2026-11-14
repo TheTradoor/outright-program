@@ -3,6 +3,9 @@
 //! conformance only; retained versus early receipts cross both redemption orders.
 //! System/SPL/ATA/wrapper construction; only Clock, external Pyth reports, signer
 //! SOL and program loading are harness inputs. No protocol-account mutation.
+//! Receipt histories first publicly corroborate the current effective price.
+//! Their later lag is authenticated-origin; a merely fresh report during
+//! trade-origin lag remains non-rewardable and is covered by the handoff controls.
 
 use super::*;
 
@@ -159,6 +162,12 @@ fn v16_program_hybrid_catchup_rewards_survive_resolved_cohort_redemption_order()
             let discovery = 2 * fee(POS_SCALE, ACCEPTED_PRINT, bps);
             assert_eq!(env.market_state().1.assets[0].effective_price, ENTRY);
             assert_eq!(env.market_state().1.assets[0].raw_oracle_target_price, MARK);
+            let (corroborated_report, corroboration_cu) = corroborate_current_price(
+                &mut env, 0, &feed, trader_a, &owners[4], portfolios, &mut tracked,
+            );
+            providers.push((corroborated_report, env.svm.get_account(&corroborated_report)));
+            peak = peak.max(corroboration_cu);
+
             let mut fees = 0;
             let mut rewards = 0;
             let mut budgets = [0; 2];
