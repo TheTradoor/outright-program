@@ -350,8 +350,7 @@ fn assert_resolved_reserve_controls(evidence: &LiquidationToPartialReceiptEviden
         "the lapsed reserve must pay the claimant its full entitlement: {evidence:?}"
     );
     assert!(
-        terminal.terminal_landing_slot > landing
-            && terminal.terminal_landing_slot == 111,
+        terminal.terminal_landing_slot > landing && terminal.terminal_landing_slot == 111,
         "wind-down waits for the last pledged bucket's #224-bounded lapse: {evidence:?}"
     );
 }
@@ -2065,6 +2064,23 @@ fn v16_program_reference_model_dimension_composition_is_source_complete() {
     assert!(instruction_roster.contains(
         "registry_roster, production_roster,\n        \"public instruction coverage registry must have exactly one row per production"
     ));
+}
+
+// This fixed public sequence has unequal sums of per-leg ceil quantities after
+// ADL while the two aggregate OI ledgers remain exactly equal. Replay both
+// permissionless progress and independent owner exit, including all existing
+// price/PnL/custody and rollback oracles in run_scenario.
+#[test]
+fn v16_program_effective_oi_rounding_replays_both_exit_campaigns() {
+    let scenario: Scenario = serde_json::from_str(include_str!(
+        "../../fixtures/inv_086_ceil_residue_scenario.json"
+    ))
+    .expect("decode retained ceil-residue scenario");
+    let coverage = run_scenario(&scenario).expect("exact ceil-residue public sequence and exits");
+    assert!(coverage.route_success.iter().all(|count| *count != 0));
+    assert!(
+        coverage.token_frame_checks != 0 && coverage.current_certificate_full_refresh_checks != 0
+    );
 }
 
 proptest! {

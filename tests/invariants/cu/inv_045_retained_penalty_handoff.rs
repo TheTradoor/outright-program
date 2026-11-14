@@ -1,6 +1,7 @@
 //! INV-045 / row 422: old liquidation penalties survive a later fresh-report handoff.
-//! A committed stale-mark liquidation precedes fresh liquidation while price still
-//! lags. Discovery fees and the old penalty remain outside every new reward/budget.
+//! A committed stale-mark liquidation precedes liquidation at a fully reached
+//! fresh target. Discovery fees and the old penalty remain outside every new
+//! reward/budget; routed histories retain their fresh-but-lagging negative cases.
 
 use super::*;
 
@@ -258,24 +259,29 @@ fn run_retained_handoff_impl(
     let stale_price = ENTRY - ENTRY * 24 / 10_000;
     // Replacing the pending target restarts the cap anchor at the accepted price.
     let handoff_price = stale_price - stale_price * 24 / 10_000;
-    for (phase, slot, price) in [
-        (0, 6, stale_price),
-        (1, 7, handoff_price),
-        (2, 14, FRESH_TARGET),
-    ] {
+    let phases = if routes.is_none() {
+        // Permit enough elapsed movement to reach the authenticated target
+        // before the second liquidation. Fresh-but-lagging routed histories
+        // below retain their original zero-reward coverage.
+        [(0, 6, stale_price), (1, 14, FRESH_TARGET), (2, 15, FRESH_TARGET)]
+    } else {
+        [(0, 6, stale_price), (1, 7, handoff_price), (2, 14, FRESH_TARGET)]
+    };
+    for (phase, slot, price) in phases {
         let now = 995 + slot as i64;
         set_test_clock(&mut env, slot, now);
+        let report_target = FRESH_TARGET;
         let report = if phase == 0 {
             initial
         } else {
-            env.set_pyth_price_with_conf(&feed, FRESH_TARGET as i64, -6, 0, now)
+            env.set_pyth_price_with_conf(&feed, report_target as i64, -6, 0, now)
         };
         let recipient_report = if routes.is_some() && hybrid_recipient {
             Some(env.set_pyth_price_with_conf(&recipient_feed, 120, -6, 0, now))
         } else {
             None
         };
-        let equivocal = env.set_pyth_price_with_conf(&feed, FRESH_TARGET as i64 + 1, -6, 0, now);
+        let equivocal = env.set_pyth_price_with_conf(&feed, report_target as i64 + 1, -6, 0, now);
         tracked.extend([report, equivocal]);
         tracked.extend(recipient_report);
         let valid = observe_with_optional_recipient_report(
@@ -344,6 +350,7 @@ fn run_retained_handoff_impl(
             let keeper_before = env.portfolio_state(keeper);
             let before_cert = health_cert(&env.portfolio_state(target));
             if phase == 2
+                && before.assets[0].slot_last == slot
                 && before.assets[0].effective_price == price
                 && before_cert.certified_liq_deficit == 0
                 && census(&env, portfolios)[0]
@@ -389,7 +396,7 @@ fn run_retained_handoff_impl(
             assert_eq!(after.assets[0].effective_price, price, "phase={phase}");
             assert_eq!(
                 after.assets[0].raw_oracle_target_price,
-                if phase == 0 { MARK } else { FRESH_TARGET }
+                if phase == 0 { MARK } else { report_target }
             );
             assert_eq!(
                 profile.last_good_oracle_slot,
@@ -439,12 +446,22 @@ fn run_retained_handoff_impl(
             } else {
                 assert!(old_penalty > 0);
                 if phase == 1 {
-                    assert!(
-                        price > MARK && MARK > FRESH_TARGET,
-                        "fresh publication precedes paid-target catchup"
-                    );
-                    for wrong in [ENTRY, MARK, FRESH_TARGET, ACCEPTED_PRINT, 900_000] {
+                    if routes.is_none() {
+                        assert_eq!(price, report_target);
+                        let profile = state::read_asset_oracle_profile(
+                            &env.svm.get_account(&env.market).unwrap().data, 0,
+                        ).unwrap();
+                        assert_eq!(profile.effective_price_provenance,
+                            percolator_prog::constants::EFFECTIVE_PRICE_PROVENANCE_AUTHENTICATED);
+                    } else {
+                        assert!(price > MARK && MARK > FRESH_TARGET,
+                            "routed paid-origin publication remains behind its target");
+                    }
+                    for wrong in [ENTRY, MARK, ACCEPTED_PRINT, 900_000] {
                         assert_ne!(penalty, fee(closed, wrong, 5));
+                    }
+                    if routes.is_some() {
+                        assert_ne!(penalty, fee(closed, FRESH_TARGET, 5));
                     }
                 }
                 new_penalties += penalty;

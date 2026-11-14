@@ -1,6 +1,9 @@
 //! INV-036/045/061, row422: earned rewards across policy succession during catchup.
 //! A retained liquidation instruction crosses the policy update after certification;
 //! paying the earlier receipt before or after that update must preserve entitlement.
+//! Receipt histories first publicly corroborate the current effective price.
+//! Their later lag is authenticated-origin; a merely fresh report during
+//! trade-origin lag remains non-rewardable and is covered by the handoff controls.
 
 use super::*;
 
@@ -123,6 +126,11 @@ fn v16_program_reward_policy_succession_preserves_receipts_and_effective_price_c
         assert_eq!(staged.assets[0].effective_price, ENTRY);
         assert_eq!(staged.assets[0].raw_oracle_target_price, MARK);
         census(&env, portfolios);
+
+        let (_, corroboration_cu) = corroborate_current_price(
+            &mut env, 0, &feed, trader_a, &owners[4], portfolios, &mut tracked,
+        );
+        peak_crank = peak_crank.max(corroboration_cu);
 
         let mut total_fee = 0;
         let mut total_reward = 0;
