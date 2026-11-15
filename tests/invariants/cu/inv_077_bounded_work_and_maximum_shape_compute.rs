@@ -81,6 +81,9 @@ mod terminal_destination_variants;
 #[path = "inv_077_short_side_b_budget.rs"]
 mod short_side_b_budget;
 
+#[path = "inv_077_source_lien_loss_refresh.rs"]
+mod source_lien_loss_refresh;
+
 #[path = "inv_077_public_native_insurance_capacity.rs"]
 mod public_native_insurance_capacity;
 
@@ -727,8 +730,11 @@ fn release_all_source_liens_with_cu(
 fn v16_program_max_source_flat_lien_release_and_owner_exit_are_bounded() {
     let (mut env, taker_owner, lp_owner, taker, lp, slot) =
         setup_max_source_live_pair_with_seeded_lien();
+    // Eleven legs: the most the source-lien refresh bound admits beside the two seeded liens.
     let mut max_flatten_cu = 0;
-    for asset_index in (0..MAX_SOURCE_LIVE_ASSETS).rev() {
+    for asset_index in
+        ((MAX_SOURCE_LIVE_ASSETS - SEEDED_LIEN_RETAINED_ASSETS)..MAX_SOURCE_LIVE_ASSETS).rev()
+    {
         let lp_state = env.portfolio_state(lp);
         let basis = active_leg_for_asset(&lp_state, usize::from(asset_index)).basis_pos_q;
         assert_ne!(basis, 0, "asset {asset_index} must retain a real leg");

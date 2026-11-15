@@ -1,6 +1,21 @@
 # Outright program qualification
 
-This is a development fork of [aeyakovenko/percolator-prog](https://github.com/aeyakovenko/percolator-prog), based on upstream commit `357157e6e14d1d10ce78a995d5d50bb3c1f2ae13`. The upstream history, license and attribution are retained. The Percolator engine dependency remains `a712af767eeb217876a3d3c50e3849b60ea54462`; the engine's accounting implementation is not modified by this repair series.
+This is a development fork of [aeyakovenko/percolator-prog](https://github.com/aeyakovenko/percolator-prog), based on upstream commit `7b11091328de23cded2e4afe96592bbd060a6828`. The upstream history, license and attribution are retained. The Percolator engine dependency is `5e3af0710ec7e9b7077393012f8a94a31b2f07ef`; its source is used without local accounting changes.
+
+## November 15 upstream integration
+
+The candidate merges eleven upstream program commits and the matching nine-commit
+engine update. Live value exits now check unsettled positions on their own asset,
+and trade admission bounds the work needed to refresh liened claims. Single and
+batch trade regressions cover that bound, including lapsed source domains.
+
+The engine update corrects resolved-close ledger recovery, liquidation behind
+lapsed backing, loss payments funded by liened claims, provider withdrawals before
+winners settle, and repayment of provider principal after a late resolved loss.
+Outright's Recovery observation correction and independent model/fixture repairs
+below remain present. No account-layout or instruction-encoding change was found
+in the reviewed diff; Rust conformance and full qualification must verify that
+for the exact candidate before adoption.
 
 ## Changes under qualification
 

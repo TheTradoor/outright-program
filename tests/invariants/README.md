@@ -30412,6 +30412,49 @@ shared-lien expiry/refill slice is addressed separately below. INV-033 retains i
 absence guard and pinned engine-owned contracts; no insurance-lien creation, engine proof rerun,
 generic F completion or invariant status promotion is claimed.
 
+### INV-031 Live value exits and unsettled positions (2026-11-14)
+
+[`inv_031_live_exit_loss_stale_gate.rs`](cu/inv_031_live_exit_loss_stale_gate.rs) and
+[`inv_031_provider_exit_principal.rs`](cu/inv_031_provider_exit_principal.rs), both mounted from
+the INV-031 CU module. Setup uses public wrapper instructions only.
+
+**Guarantee.** While the market is Live, `WithdrawInsuranceAsset`, `WithdrawBackingBucket` and
+`WithdrawBackingBucketEarnings` are refused while a stored position on the exit's own asset has
+not settled that asset's latest price or funding move, whichever asset was touched last. A loss
+that has happened and is not settled yet can still draw on insurance, and a gain that is not a
+registered claim yet is still owed the payment of the domain's losers.
+
+**The defect it closes.** The Live withdrawal gate refuses while the market-wide loss-stale flag
+is set. That flag summarizes only the asset touched last, and the gate's own asset-local check
+looked at accrual lag alone, so one crank on a second, current asset cleared the gate while
+positions on the exit's asset were still unrefreshed. The gate now also refuses on the asset's
+own count of unsettled positions.
+
+| Selector | Fixture | Before the fix | Required |
+|---|---|---|---|
+| `live_exit_loss_stale_gate::v16_program_live_insurance_exit_waits_for_unsettled_positions_on_its_asset` | a long owes 601 on a 60% move and has 600; 2 of insurance; nobody refreshed | the operator withdraws both atoms of insurance and the short collects 600 | the withdrawal is refused with exact rollback, 1 of insurance pays the shortfall, and the short collects its whole 601 |
+| `provider_exit_principal::v16_program_live_provider_exit_leaves_the_loser_payment_for_the_winner` | a long gains 400 on a 4% move, only the short refreshed, 1,000 of provider principal | on engine `427dc5fc584ccd0bb7f4510c76c8992f68546a6c` the backing authority withdraws 1,400 | nothing leaves while the long is unrefreshed; then 1,001 is refused, 1,000 is paid, one more atom is refused, and the long holds a 400 claim on 400 of backing at full rate |
+| `provider_exit_principal::v16_program_live_provider_exit_is_empty_without_provider_principal` | the same without provider principal | on engine `427dc5fc584ccd0bb7f4510c76c8992f68546a6c` the backing authority withdraws the short's 400 | nothing leaves before or after the long is refreshed |
+
+Two layers protect the provider exit. The engine caps it at provider principal while a position
+on the asset is unsettled (engine `827a125f719d6d0884734f216ca54e6c9f87319a`), and the wrapper
+gate refuses it outright in that window. With the gate alone unfixed the first provider selector
+fails on its principal step; with the engine alone unfixed both provider selectors pass through
+the gate.
+
+**Unchanged on purpose.** Once every position on the asset is settled, backing above the claim
+watermark leaves as before, whether or not a loser paid it in: that is how a domain is drained
+before its asset is retired or restarted
+(`v16_program_asset0_recovery_matrix_preserves_provider_withdraw_and_restart_progress`,
+`v16_program_reused_slot_matches_fresh_after_public_insurance_spend`). After resolution the
+engine's surplus rule governs alone
+(`v16_program_resolved_provider_withdraws_unneeded_backing_before_expiry`). The market-wide flag
+is still consulted, so an exit can still be refused because of the asset touched last.
+
+**Remaining gaps.** The earnings exit shares the gate and has no selector of its own here. The
+optional backing-domain ledger account, backing fees and the shutdown drain are not part of these
+fixtures.
+
 ### INV-031 CPI-created shared-lien consumption
 
 `v16_program_cpi_created_shared_liens_preserve_single_use_through_no_cpi_exit` adds one focused
@@ -32499,6 +32542,134 @@ market-N, and combined terminal occupancy remain unmeasured here. Full-shape
 force close and rewarded maintenance retain their separate documented gaps.
 No production finding, engine proof, exhaustive guarantee, or invariant-status
 promotion is claimed; INV-077 remains open evidence.
+
+### INV-077 source-lien loss refresh (2026-11-13)
+
+[`inv_077_source_lien_loss_refresh.rs`](cu/inv_077_source_lien_loss_refresh.rs), mounted from
+the existing INV-077 CU module, adds three selectors under `source_lien_loss_refresh::`,
+measured on engine `427dc5fc584ccd0bb7f4510c76c8992f68546a6c`. Setup uses public wrapper
+instructions only; no program-owned state is injected.
+
+**Guarantee.** An LP holds a 1,000-atom claim in each of the twenty-eight source domains, each
+beside 1,000 atoms of provider principal, and the claims are liened as its margin. A mark move
+takes that margin, and one hint-free `PermissionlessCrank` must settle every losing leg in a
+single transaction: an account that cannot be refreshed cannot be liquidated. Each test requires
+that call to stay below 1.375M CU, the backing behind every burned lien to end in the domain its
+loss is owed to (after the taker refreshes, every domain's fresh reserved backing covers its
+claims), and the total backing across the source domains to be unchanged.
+
+| Selector | Shape | Refresh CU |
+|---|---|---|
+| `v16_program_one_leg_loss_through_every_source_lien_is_bounded_and_backs_the_gain` | one short, 28 liened claims, no capital | 760,279 |
+| `v16_program_five_leg_loss_through_every_source_lien_is_bounded_and_backs_every_gain` | five shorts, 28 liened claims, no capital | 1,097,075 |
+| `v16_program_six_leg_loss_through_leftover_source_liens_is_bounded_and_backs_every_gain` | six shorts opened against capital, 27 leftover liens | 1,167,865 |
+
+The one-leg test also pins the exact result: the loss domain ends with its own 2,000 atoms and
+the 1,000 the taker paid into each of the other twenty-seven domains, which keep their provider's
+1,000. On engine `a712af767eeb217876a3d3c50e3849b60ea54462` the backing assertions fail (the
+burned liens are un-pledged where they stand), and the six-leg refresh exceeds the transaction
+limit.
+
+**Remaining gaps.** More losing legs over the same lien table cost more. The shapes that exceeded
+the transaction limit when this section was written (ten legs with the 27 leftover liens, and
+fourteen legs after a ten-percent move) can no longer be built: see the refresh bound below.
+Hybrid feeds, funding, fees and partially backed domains are not part of this fixture.
+
+### INV-077 source-lien refresh bound (2026-11-14)
+
+The same file, selectors under `source_lien_loss_refresh::`, measured on engine
+`427dc5fc584ccd0bb7f4510c76c8992f68546a6c`. Setup uses public wrapper instructions only.
+
+**Rule.** A portfolio that holds liened claim face may only grow while
+`liened claims + 6 * active legs <= 72`
+(`WRAPPER_SOURCE_LIEN_REFRESH_LEG_WEIGHT`, `WRAPPER_MAX_SOURCE_LIEN_REFRESH_WORK`): any number of
+liens up to seven legs, 24 at eight, 18 at nine, 12 at ten, 6 at eleven, none from twelve. A
+portfolio without liens keeps the fourteen-leg cap alone. The check runs after the engine call on
+both portfolios of `TradeNoCpi`, `TradeCpi`, `BatchTradeNoCpi` and `BatchTradeCpi`, the only
+instructions that add a leg or a lien. It compares the work before and after and refuses only a
+trade that raises it past the bound, with `InvalidInstruction` and full rollback. Reducing or
+closing a leg is never refused by it.
+
+**Why.** One crank settles every losing leg of a portfolio. A loss paid from capital or netted
+against unliened face is cheap. A loss that burns liened face is not: with all 28 source domains
+occupied the costliest refresh measures about `427k + 73.6k * legs + 12k * liened claims` CU, each
+leg that reaches liened face costing about 26k more than one that pays from capital and each
+further lien about 12k. Thirteen legs over a single lien measure 1,395,095 CU and fourteen exceed
+the transaction limit, so a portfolio could be put where no crank refreshes it, and a portfolio
+that cannot be refreshed cannot be liquidated.
+
+**Guarantee.** For every leg count the bound binds, the costliest loss on it fits in one hint-free
+`PermissionlessCrank` below 1.375M CU, pays every gain's domain (after the taker refreshes, every
+domain's fresh reserved backing covers its claims; total backing is unchanged), and one more leg
+is refused. The costliest loss has the first leg take every unliened claim and half of the first
+liened one, and every later leg burn a piece of liened face that ends inside a claim, so every
+leg takes the liened path and the liened burns number `liened + legs - 1`.
+
+| Selector | Shape | Refresh CU |
+|---|---|---|
+| `v16_program_costliest_seven_leg_loss_over_27_liens_is_bounded_and_backs_every_gain` | 7 legs, 27 liens | 1,254,569 |
+| `v16_program_costliest_eight_leg_loss_over_24_liens_is_bounded_and_backs_every_gain` | 8 legs, 24 liens | 1,288,985 |
+| `v16_program_costliest_nine_leg_loss_over_18_liens_is_bounded_and_backs_every_gain` | 9 legs, 18 liens | 1,296,381 |
+| `v16_program_costliest_ten_leg_loss_over_12_liens_is_bounded_and_backs_every_gain` | 10 legs, 12 liens | 1,302,635 |
+| `v16_program_costliest_eleven_leg_loss_over_6_liens_is_bounded_and_backs_every_gain` | 11 legs, 6 liens | 1,305,908 |
+| `v16_program_fourteen_leg_loss_through_unliened_claims_at_the_source_cap_is_bounded` | 14 legs, 28 unliened claims | 1,260,213 |
+| `v16_program_source_lien_refresh_bound_refuses_the_leg_past_it` | 27 leftover liens: the eighth leg is refused at any size; reducing, closing and reopening a leg are not | n/a |
+| `v16_program_source_lien_refresh_bound_refuses_a_batch_as_a_whole` | 27 leftover liens, `BatchTradeNoCpi`: eight legs in one batch are refused whole with the market and both portfolios unchanged; seven are admitted; an eighth alone, and an eighth beside a reduced leg, are refused; closing one leg and opening another in one batch is not | n/a |
+
+**Existing fixture changed.** `setup_max_source_live_pair_with_seeded_lien` retained fourteen legs
+beside its two liens, which is past the bound. It now retains eleven, the most the bound admits
+beside two liens, and seeds the liens on the first retained asset.
+`v16_program_max_source_flat_lien_release_and_owner_exit_are_bounded` flattens those eleven; its
+other assertions are unchanged.
+
+**Measured, not asserted.** Scratch measurements on the same fixture family, kept out of the
+suite:
+
+- Claims whose lien was impaired by lapsed backing are not counted. They cost about 4k CU a burn:
+  fourteen legs burning 27 impaired claims measure 1,141,695 CU, and the bound's shapes with
+  impaired claims in place of the unliened ones measure at most 1,304,615.
+- Unliened claims in expired domains cost more than fully backed ones. Fourteen legs burning 28 of
+  them measure 1,390,372 CU: inside the transaction limit by less than 10,000 CU and above the
+  1.375M guardrail the tests here use. No admission rule covers that shape, because expiry is
+  driven by time. (Fixed in the engine and asserted since `5e3af071`: see the next section.)
+
+**Remaining gaps.** The bound is calibrated on AuthMark assets at 100% margin with a hint-free
+crank. Hybrid feeds, funding, fees and partially backed domains (credit rate between zero and
+one) are not part of this fixture. In the states this fixture reaches, the engine itself refuses
+(`LockActive`) a trade that needs a further lien while legs are open, and one that grows an
+existing leg beside leftover liens, so the bound is exercised here through new legs only.
+
+### INV-077 loss refresh over claims in lapsed domains (2026-11-14)
+
+The same file, selector
+`source_lien_loss_refresh::v16_program_fourteen_leg_loss_over_claims_in_lapsed_domains_is_bounded`,
+measured on engine `5e3af0710ec7e9b7077393012f8a94a31b2f07ef`. Setup uses public wrapper
+instructions only.
+
+**Shape.** The provider buckets behind all 28 of the LP's claims expire at slot 60. The LP's
+liens are released first, the clock is walked past the expiry with every asset marked in every
+slot, and the LP is cranked until each bucket has been expired: 28 unliened claims of 1,000 at
+credit rate zero. The LP then keeps exactly what the move will cost (29,400), opens fourteen
+shorts of 21 units, and every mark doubles.
+
+**Why this was the costliest refresh.** Each leg's loss meets face that cannot pay for it. The
+leg's own payment into its loss domain brings the LP's lapsed claim there back to par, and the
+next leg nets that claim and pays the rest from capital. Every leg therefore both moves backing
+into its loss domain and pays capital into it, and the engine wrote that domain's ledger once for
+each: about 13,000 CU a time. The refresh measured 1,390,372 CU, with no admission rule able to
+prevent the shape. Engine `4eba3dfb` books the two payments of a loss in one ledger update,
+leaving the stored state unchanged bit for bit.
+
+**Guarantee.** One hint-free `PermissionlessCrank` settles all fourteen losses below the 1.375M
+guardrail (1,221,642 CU; the opens stay below it too, 736,974 at most). Afterwards 27 of the 28
+claims have been cancelled against the loss one for one, capital has paid the other 2,400, one
+claim of 1,000 is left, and the certificate is current. On engine `827a125f` the test fails on
+the guardrail at 1,390,372.
+
+**Not asserted.** The test bounds the work. It takes no position on the outcome it pins: 27,000
+of the LP's 29,400 loss is met by face whose backing had lapsed, so the winner's gains are backed
+by what capital paid. How lapsed claims should rank against new loser payments into the same
+domain is an engine design question, noted in the engine PR.
 
 ### INV-077 source-capacity reclamation
 
